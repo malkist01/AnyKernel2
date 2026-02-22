@@ -133,9 +133,6 @@ split_boot() {
       1) splitfail=1;;
       2) touch chromeos;;
     esac;
-    # Capture HEADER_VER
-    HEADER_VER=$(grep "HEADER_VER" infotmp | sed -n 's/.*\[\(.*\)\]/\1/p')
-    echo "$HEADER_VER" > header_ver
   fi;
 
   if [ $? != 0 -o "$splitfail" ]; then
@@ -160,7 +157,7 @@ unpack_ramdisk() {
   if [ -f ramdisk.cpio ]; then
     comp=$(magiskboot decompress ramdisk.cpio 2>&1 | grep -v 'raw' | sed -n 's;.*\[\(.*\)\];\1;p');
   else
-    echo "No ramdisk found to unpack. But not aborting :)...";
+    abort "No ramdisk found to unpack. Aborting...";
   fi;
   if [ "$comp" ]; then
     mv -f ramdisk.cpio ramdisk.cpio.$comp;
@@ -178,7 +175,7 @@ unpack_ramdisk() {
   cd $RAMDISK;
   EXTRACT_UNSAFE_SYMLINKS=1 cpio -d -F $SPLITIMG/ramdisk.cpio -i;
   if [ $? != 0 -o ! "$(ls)" ]; then
-    echo "Unpacking ramdisk failed. But not aborting :)...";
+    abort "Unpacking ramdisk failed. Aborting...";
   fi;
   if [ -d "$AKHOME/rdtmp" ]; then
     cp -af $AKHOME/rdtmp/* .;
@@ -235,7 +232,7 @@ repack_ramdisk() {
     fi;
   fi;
   if [ "$packfail" ]; then
-    echo "Repacking ramdisk failed. But not aborting :)...";
+    abort "Repacking ramdisk failed. Aborting...";
   fi;
 
   if [ -f "$BIN/mkmtkhdr" -a -f "$SPLITIMG/boot.img-base" ]; then
@@ -251,58 +248,6 @@ flash_boot() {
   local varlist i kernel ramdisk fdt cmdline comp part0 part1 nocompflag signfail pk8 cert avbtype;
 
   cd $SPLITIMG;
-  # Get header version (default to 0 if not found)
-  HEADER_VER=$(cat header_ver 2>/dev/null || echo 0)
-
-  # Auto-split Image.gz-dtb into Image.gz + dtb for header v2 if needed
-  if [ "$HEADER_VER" -eq 2 ] && [ -f "$AKHOME/Image.gz-dtb" ] && { [ ! -f "$AKHOME/Image.gz" ] || [ ! -f "$AKHOME/dtb" ]; }; then
-    ui_print " " "Splitting Image.gz-dtb into Image.gz + dtb...";
-    cd $AKHOME;
-    magiskboot split Image.gz-dtb;
-    if [ -f kernel ] && [ -f kernel_dtb ]; then
-      gzip -c kernel > Image.gz  # Recompress decompressed kernel
-      mv kernel_dtb dtb;
-      rm -f kernel;
-      ui_print " " "Split successful";
-    else
-      abort "Failed to split Image.gz-dtb. Aborting...";
-    fi;
-    cd $SPLITIMG;
-  fi;
-
-  # Kernel selection logic based on header version
-  if [ "$HEADER_VER" -eq 0 ] || [ "$HEADER_VER" -eq 1 ]; then
-    # Header v0 and v1 - require combined Image.gz-dtb
-    if [ -f $AKHOME/Image.gz-dtb ]; then
-      kernel=$AKHOME/Image.gz-dtb
-      ui_print " " "Using combined Image.gz-dtb for header v$HEADER_VER"
-      unset dt  # Explicitly unset dt for combined format
-    else
-      abort "Header version $HEADER_VER requires Image.gz-dtb. Aborting..."
-    fi
-  elif [ "$HEADER_VER" -eq 2 ]; then
-    # Header v2 - require separate Image.gz and dtb
-    if [ -f $AKHOME/Image.gz ]; then
-      kernel=$AKHOME/Image.gz
-      ui_print " " "Using separate Image.gz + dtb for header v2"
-    else
-      abort "Header version 2 requires Image.gz. Aborting..."
-    fi
-    # Verify dtb exists
-    if [ ! -f $AKHOME/dtb ] && [ ! -f $SPLITIMG/dtb ]; then
-      abort "Header version 2 requires a separate dtb. Aborting..."
-    fi
-  else
-    # Original kernel detection for other header versions
-    ui_print " " "Using auto-detected kernel for header v$HEADER_VER"
-    for i in zImage zImage-dtb Image Image-dtb Image.gz Image.gz-dtb Image.bz2 Image.bz2-dtb Image.lzo Image.lzo-dtb Image.lzma Image.lzma-dtb Image.xz Image.xz-dtb Image.lz4 Image.lz4-dtb Image.fit; do
-      if [ -f $i ]; then
-        kernel=$AKHOME/$i;
-        break;
-      fi;
-    done;
-  fi
-
   if [ -f "$BIN/mkimage" ]; then
     varlist="name arch os type comp addr ep";
   elif [ -f "$BIN/mk" -a -f "$BIN/unpackelf" -a -f boot.img-base ]; then
@@ -316,6 +261,12 @@ flash_boot() {
   done;
 
   cd $AKHOME;
+  for i in zImage zImage-dtb Image Image-dtb Image.gz Image.gz-dtb Image.bz2 Image.bz2-dtb Image.lzo Image.lzo-dtb Image.lzma Image.lzma-dtb Image.xz Image.xz-dtb Image.lz4 Image.lz4-dtb Image.fit; do
+    if [ -f $i ]; then
+      kernel=$AKHOME/$i;
+      break;
+    fi;
+  done;
   if [ "$kernel" ]; then
     if [ -f "$BIN/mkmtkhdr" -a -f "$SPLITIMG/boot.img-base" ]; then
       mkmtkhdr --kernel $kernel;
@@ -907,7 +858,7 @@ setup_ak() {
   rmdir -p modules patch ramdisk 2>/dev/null;
 
   # automate simple multi-partition setup for hdr_v4 boot + init_boot + vendor_kernel_boot (for dtb only until magiskboot supports hdr v4 vendor_ramdisk unpack/repack)
-  if [ -e "/dev/block/bootdevice/by-name/init_boot$SLOT" -a -e "/dev/block/bootdevice/by-name/vendor_kernel_boot$SLOT" -a ! -f init_v4_setup ] && [ -f dtb -o -d vendor_ramdisk -o -d vendor_patch ]; then
+  if [ -e "/dev/block/bootdevice/by-name/init_boot$SLOT" -a ! -f init_v4_setup ] && [ -f dtb -o -d vendor_ramdisk -o -d vendor_patch ]; then
     echo "Setting up for simple automatic init_boot flashing..." >&2;
     (mkdir boot-files;
     mv -f Image* boot-files;
