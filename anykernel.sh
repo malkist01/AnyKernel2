@@ -1,17 +1,25 @@
 ### AnyKernel3 Ramdisk Mod Script
 ## osm0sis @ xda-developers
 
+### AnyKernel3 Ramdisk Mod Script
+## osm0sis @ xda-developers
+
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=AnajaniLaurens
+kernel.string=Kernel 4.19 Testing
 do.devicecheck=1
 do.modules=0
 do.systemless=1
 do.cleanup=1
 do.cleanuponabort=0
-device.name1=ginkgo
-device.name2=
+device.name1=riva
+device.name2=rolex
+device.name3=land
+device.name4=prada
+device.name5=ugg
+device.name6=ugglite
+device.name7=santoni
 supported.versions=
 supported.patchlevels=
 supported.vendorpatchlevels=
