@@ -133,6 +133,9 @@ split_boot() {
       1) splitfail=1;;
       2) touch chromeos;;
     esac;
+    # Capture HEADER_VER
+    HEADER_VER=$(grep "HEADER_VER" infotmp | sed -n 's/.*\[\(.*\)\]/\1/p')
+    echo "$HEADER_VER" > header_ver
   fi;
 
   if [ $? != 0 -o "$splitfail" ]; then
@@ -175,7 +178,7 @@ unpack_ramdisk() {
   cd $RAMDISK;
   EXTRACT_UNSAFE_SYMLINKS=1 cpio -d -F $SPLITIMG/ramdisk.cpio -i;
   if [ $? != 0 -o ! "$(ls)" ]; then
-    abort "Unpacking ramdisk failed. Aborting...";
+    echo "Unpacking ramdisk failed.";
   fi;
   if [ -d "$AKHOME/rdtmp" ]; then
     cp -af $AKHOME/rdtmp/* .;
@@ -184,7 +187,7 @@ unpack_ramdisk() {
 ### dump_boot (dump and split image, then extract ramdisk)
 dump_boot() {
   split_boot;
-  unpack_ramdisk;
+  [ -f "$split_img/ramdisk.cpio.gz" -o -f "$split_img/ramdisk.cpio" ] && unpack_ramdisk;
 }
 ###
 
@@ -232,7 +235,7 @@ repack_ramdisk() {
     fi;
   fi;
   if [ "$packfail" ]; then
-    abort "Repacking ramdisk failed. Aborting...";
+    echo "Repacking ramdisk failed.";
   fi;
 
   if [ -f "$BIN/mkmtkhdr" -a -f "$SPLITIMG/boot.img-base" ]; then
@@ -248,6 +251,59 @@ flash_boot() {
   local varlist i kernel ramdisk fdt cmdline comp part0 part1 nocompflag signfail pk8 cert avbtype;
 
   cd $SPLITIMG;
+  # Get header version (default to 0 if not found)
+  HEADER_VER=$(cat header_ver 2>/dev/null || echo 0)
+
+  # Auto-split Image.gz-dtb into Image.gz + dtb for header v2 if needed
+  if [ "$HEADER_VER" -eq 2 ] && [ -f "$AKHOME/Image.gz-dtb" ] && { [ ! -f "$AKHOME/Image.gz" ] || [ ! -f "$AKHOME/dtb" ]; }; then
+    ui_print " " "Splitting Image.gz-dtb into Image.gz + dtb...";
+    cd $AKHOME;
+    magiskboot split Image.gz-dtb;
+    if [ -f kernel ]; then
+      gzip -c kernel > Image.gz  # Recompress decompressed kernel
+      rm -f kernel;
+      ui_print " " "Split successful";
+    else
+      abort "Failed to split Image.gz-dtb. Aborting...";
+    fi;
+    cd $SPLITIMG;
+  fi;
+
+  # Kernel selection logic based on header version
+  if [ "$HEADER_VER" -eq 0 ] || [ "$HEADER_VER" -eq 1 ]; then
+    # Header v0 and v1 - require combined Image.gz-dtb
+    if [ -f $AKHOME/Image.gz-dtb ]; then
+      kernel=$AKHOME/Image.gz-dtb
+      ui_print " " "Using combined Image.gz-dtb for header v$HEADER_VER"
+      unset dt  # Explicitly unset dt for combined format
+    else
+      abort "Header version $HEADER_VER requires Image.gz-dtb. Aborting..."
+    fi
+  elif [ "$HEADER_VER" -eq 2 ]; then
+    # Header v2 - require separate Image.gz and dtb
+    if [ -f $AKHOME/Image.gz ]; then
+      kernel=$AKHOME/Image.gz
+      ui_print " " "Using separate Image.gz + dtb for header v2"
+    else
+      abort "Header version 2 requires Image.gz. Aborting..."
+    fi
+    # Only use dtb from AKHOME, error if not found
+    if [ -f $AKHOME/dtb ]; then
+      dt=$AKHOME/dtb
+    else
+      abort "Header version 2 requires a dtb in AKHOME. Aborting..."
+    fi
+  else
+    # Original kernel detection for other header versions
+    ui_print " " "Using auto-detected kernel for header v$HEADER_VER"
+    for i in zImage zImage-dtb Image Image-dtb Image.gz Image.gz-dtb Image.bz2 Image.bz2-dtb Image.lzo Image.lzo-dtb Image.lzma Image.lzma-dtb Image.xz Image.xz-dtb Image.lz4 Image.lz4-dtb Image.fit; do
+      if [ -f $i ]; then
+        kernel=$AKHOME/$i;
+        break;
+      fi;
+    done;
+  fi
+
   if [ -f "$BIN/mkimage" ]; then
     varlist="name arch os type comp addr ep";
   elif [ -f "$BIN/mk" -a -f "$BIN/unpackelf" -a -f boot.img-base ]; then
@@ -261,12 +317,6 @@ flash_boot() {
   done;
 
   cd $AKHOME;
-  for i in zImage zImage-dtb Image Image-dtb Image.gz Image.gz-dtb Image.bz2 Image.bz2-dtb Image.lzo Image.lzo-dtb Image.lzma Image.lzma-dtb Image.xz Image.xz-dtb Image.lz4 Image.lz4-dtb Image.fit; do
-    if [ -f $i ]; then
-      kernel=$AKHOME/$i;
-      break;
-    fi;
-  done;
   if [ "$kernel" ]; then
     if [ -f "$BIN/mkmtkhdr" -a -f "$SPLITIMG/boot.img-base" ]; then
       mkmtkhdr --kernel $kernel;
@@ -564,7 +614,7 @@ flash_dtbo() { flash_generic dtbo; }
 
 ### write_boot (repack ramdisk then build, sign and write image, vendor_dlkm and dtbo)
 write_boot() {
-  repack_ramdisk;
+  [ -d "$ramdisk" ] && repack_ramdisk;
   flash_boot;
   flash_generic vendor_boot; # temporary until hdr v4 can be unpacked/repacked fully by magiskboot
   flash_generic vendor_kernel_boot; # temporary until hdr v4 can be unpacked/repacked fully by magiskboot
